@@ -5,12 +5,13 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"os/exec"
-	"strings"
+	"os"
+	"path/filepath"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/spec"
+	"github.com/jung-kurt/gofpdf"
 )
 
 func main() {
@@ -189,17 +190,29 @@ func handleXMLtoPDF(c *gin.Context) {
 		return
 	}
 
-	// Convert to HTML (dummy conversion for example purposes)
-	html := "<html><body>Converted HTML content</body></html>"
+	// Create PDF using gofpdf
+	pdf := gofpdf.New("P", "mm", "A4", "")
+	pdf.AddPage()
+	pdf.SetFont("Arial", "B", 16)
+	pdf.Cell(40, 10, "Converted PDF content")
 
-	// Generate PDF using wkhtmltopdf
-	cmd := exec.Command("wkhtmltopdf", "-", "-") // "-" reads from stdin and writes to stdout
-	cmd.Stdin = strings.NewReader(html)
-	pdfData, err := cmd.Output()
+	// Save PDF to a file
+	pdfFile := filepath.Join(os.TempDir(), "output.pdf")
+	err = pdf.OutputFileAndClose(pdfFile)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to generate pdf: %v", err)})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create PDF: %v", err)})
 		return
 	}
+
+	// Read the generated PDF file
+	pdfData, err := os.ReadFile(pdfFile)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read PDF: %v", err)})
+		return
+	}
+
+	// Clean up the temporary file
+	os.Remove(pdfFile)
 
 	c.Data(http.StatusOK, "application/pdf", pdfData)
 }
