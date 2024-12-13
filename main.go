@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/csv"
 	"encoding/xml"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-openapi/runtime/middleware"
@@ -14,10 +16,13 @@ import (
 	"github.com/jung-kurt/gofpdf"
 )
 
+var translations map[string]string
+
 func main() {
 	r := gin.Default()
 
-	// Define Swagger document
+	loadTranslations("translations.csv")
+
 	swaggerSpec := &spec.Swagger{
 		SwaggerProps: spec.SwaggerProps{
 			Swagger: "2.0",
@@ -96,13 +101,6 @@ func main() {
 												200: {
 													ResponseProps: spec.ResponseProps{
 														Description: "Successfully transformed the XML file to PDF",
-														Schema: &spec.Schema{
-															SchemaProps: spec.SchemaProps{
-																Type:        []string{"string"},
-																Format:      "binary",
-																Description: "The transformed PDF content",
-															},
-														},
 													},
 												},
 												400: {
@@ -161,12 +159,10 @@ func main() {
 		},
 	}
 
-	// Create handler for swagger.json
 	r.GET("/swagger.json", func(c *gin.Context) {
 		c.JSON(http.StatusOK, swaggerSpec)
 	})
 
-	// Create handler for swagger ui
 	opts := middleware.SwaggerUIOpts{
 		SpecURL: "/swagger.json",
 	}
@@ -228,7 +224,6 @@ func handleXMLtoPDF(c *gin.Context) {
 		return
 	}
 
-	// Parse XML
 	var doc interface{}
 	err = xml.Unmarshal(xmlData, &doc)
 	if err != nil {
@@ -236,13 +231,12 @@ func handleXMLtoPDF(c *gin.Context) {
 		return
 	}
 
-	// Create PDF using gofpdf
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.AddPage()
 	pdf.SetFont("Arial", "B", 16)
-	pdf.Cell(40, 10, "Converted PDF content")
 
-	// Save PDF to a file
+	processXMLLineByLine(xmlData, pdf)
+
 	pdfFile := filepath.Join(os.TempDir(), "output.pdf")
 	err = pdf.OutputFileAndClose(pdfFile)
 	if err != nil {
@@ -250,15 +244,68 @@ func handleXMLtoPDF(c *gin.Context) {
 		return
 	}
 
-	// Read the generated PDF file
 	pdfData, err := os.ReadFile(pdfFile)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read PDF: %v", err)})
 		return
 	}
 
-	// Clean up the temporary file
 	os.Remove(pdfFile)
 
 	c.Data(http.StatusOK, "application/pdf", pdfData)
+}
+
+func processXMLLineByLine(xmlData []byte, pdf *gofpdf.Fpdf) {
+	decoder := xml.NewDecoder(strings.NewReader(string(xmlData)))
+	var currentElement string
+	var elementStack []string
+
+	for {
+		tok, err := decoder.Token()
+		if err != nil {
+			break
+		}
+
+		switch token := tok.(type) {
+		case xml.StartElement:
+			currentElement = token.Name.Local
+			elementStack = append(elementStack, currentElement)
+		case xml.EndElement:
+			elementStack = elementStack[:len(elementStack)-1]
+		case xml.CharData:
+			content := strings.TrimSpace(string(token))
+			if content != "" {
+				path := strings.Join(elementStack, "->")
+				label := getLabel(path)
+				pdf.Cell(40, 10, fmt.Sprintf("%s: %s", label, content))
+			}
+		}
+	}
+}
+
+func getLabel(path string) string {
+	if label, ok := translations[path]; ok {
+		return label
+	}
+	parts := strings.Split(path, "->")
+	return parts[len(parts)-1]
+}
+
+func loadTranslations(filePath string) {
+	translations = make(map[string]string)
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Fatalf("Failed to open translations file: %v", err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	records, err := reader.ReadAll()
+	if err != nil {
+		log.Fatalf("Failed to read translations file: %v", err)
+	}
+
+	for _, record := range records[1:] {
+		translations[record[0]] = record[3]
+	}
 }
