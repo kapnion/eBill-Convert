@@ -319,11 +319,16 @@ func transformXMLToPDF(xmlData []byte) ([]byte, error) {
 }
 
 func printElement(pdf *gofpdf.Fpdf, currentPath, text string, groupStack []string, elementCounts map[string]int) {
-
 	// Extract the last part of the path for label lookup
 	parts := strings.Split(currentPath, "->")
+	if len(parts) == 0 {
+		return
+	}
 	elementName := parts[len(parts)-1]
-	germanLabel := lookupLabel(elementName)
+	germanLabel := lookupLabel(currentPath)
+	if germanLabel == "" {
+		germanLabel = lookupLabel(elementName)
+	}
 
 	header := ""
 
@@ -386,7 +391,7 @@ func loadCSV() {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
-	reader.Comma = ','
+	reader.Comma = ';'
 
 	_, err = reader.Read() // Skip header row
 	if err != nil {
@@ -416,15 +421,20 @@ func loadCSV() {
 	csvLoaded = true
 }
 
-func lookupLabel(elementName string) string {
+func lookupLabel(xmlPath string) string {
 	csvMutex.RLock()
 	defer csvMutex.RUnlock()
 
 	for _, mapping := range csvData {
-		parts := strings.Split(mapping.XMLPath, "->")
-		lastPart := parts[len(parts)-1]
-		if strings.EqualFold(lastPart, elementName) {
+		if strings.EqualFold(mapping.XMLPath, xmlPath) {
 			return mapping.GermanLabel
+		}
+		parts := strings.Split(mapping.XMLPath, "->")
+		if len(parts) > 0 {
+			lastPart := parts[len(parts)-1]
+			if strings.EqualFold(lastPart, xmlPath) {
+				return mapping.GermanLabel
+			}
 		}
 	}
 
