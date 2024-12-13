@@ -75,7 +75,7 @@ func main() {
 							Post: &spec.Operation{
 								OperationProps: spec.OperationProps{
 									Description: "Transforms XML to PDF.",
-									Consumes:    []string{"application/xml"},
+									Consumes:    []string{"multipart/form-data"},
 									Produces:    []string{"application/pdf"},
 									Parameters: []spec.Parameter{
 										{
@@ -95,12 +95,58 @@ func main() {
 											StatusCodeResponses: map[int]spec.Response{
 												200: {
 													ResponseProps: spec.ResponseProps{
-														Description: "PDF content generated from XML.",
+														Description: "Successfully transformed the XML file to PDF",
+														Schema: &spec.Schema{
+															SchemaProps: spec.SchemaProps{
+																Type:        []string{"string"},
+																Format:      "binary",
+																Description: "The transformed PDF content",
+															},
+														},
 													},
 												},
 												400: {
 													ResponseProps: spec.ResponseProps{
 														Description: "Invalid XML or other errors.",
+														Schema: &spec.Schema{
+															SchemaProps: spec.SchemaProps{
+																Type: spec.StringOrArray{"object"},
+																Properties: map[string]spec.Schema{
+																	"error": {
+																		SchemaProps: spec.SchemaProps{
+																			Type: spec.StringOrArray{"string"},
+																		},
+																	},
+																	"message": {
+																		SchemaProps: spec.SchemaProps{
+																			Type: spec.StringOrArray{"string"},
+																		},
+																	},
+																},
+															},
+														},
+													},
+												},
+												500: {
+													ResponseProps: spec.ResponseProps{
+														Description: "Internal server error",
+														Schema: &spec.Schema{
+															SchemaProps: spec.SchemaProps{
+																Type: spec.StringOrArray{"object"},
+																Properties: map[string]spec.Schema{
+																	"error": {
+																		SchemaProps: spec.SchemaProps{
+																			Type: spec.StringOrArray{"string"},
+																		},
+																	},
+																	"message": {
+																		SchemaProps: spec.SchemaProps{
+																			Type: spec.StringOrArray{"string"},
+																		},
+																	},
+																},
+															},
+														},
 													},
 												},
 											},
