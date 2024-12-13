@@ -1,6 +1,4 @@
-Column1;Column2;Column3;Column4;Column5;Column6
-;;;;;
-;;;;;
+
 CrossIndustryInvoice->ExchangedDocumentContext;CrossIndustryInvoice->ExchangedDocumentContext;PROZESSSTEUERUNG;;;
 CrossIndustryInvoice->ExchangedDocumentContext->BusinessProcessSpecifiedDocumentContextParameter;CrossIndustryInvoice->ExchangedDocumentContext->BusinessProcessSpecifiedDocumentContextParameter;Gruppierung der Geschäftsprozessinformationen;;;
 CrossIndustryInvoice->ExchangedDocumentContext->BusinessProcessSpecifiedDocumentContextParameter->ID;CrossIndustryInvoice->ExchangedDocumentContext->BusinessProcessSpecifiedDocumentContextParameter->ID;Geschäftsprozesstyp;;;

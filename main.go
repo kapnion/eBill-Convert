@@ -22,7 +22,6 @@ import (
 type csvMapping struct {
 	XMLPath     string
 	GermanPath  string
-	Field       string
 	GermanLabel string
 }
 
@@ -322,11 +321,9 @@ func transformXMLToPDF(xmlData []byte) ([]byte, error) {
 func printElement(pdf *gofpdf.Fpdf, currentPath, text string, groupStack []string, elementCounts map[string]int) {
 
 	germanLabel := lookupLabel(currentPath)
-
 	parts := strings.Split(currentPath, "->")
 	elementName := parts[len(parts)-1]
 	elementName = strings.TrimSpace(elementName)
-
 	header := ""
 
 	if len(groupStack) > 1 {
@@ -408,12 +405,11 @@ func loadCSV() {
 			log.Printf("Error reading CSV row: %v", err)
 			continue
 		}
-		if len(row) == 4 {
+		if len(row) == 3 {
 			csvData = append(csvData, csvMapping{
 				XMLPath:     row[0],
 				GermanPath:  row[1],
-				Field:       row[2],
-				GermanLabel: row[3],
+				GermanLabel: row[2],
 			})
 		} else {
 			log.Printf("Skipping invalid CSV row: %v", row)
@@ -425,13 +421,16 @@ func loadCSV() {
 func lookupLabel(xmlPath string) string {
 	csvMutex.RLock()
 	defer csvMutex.RUnlock()
+
 	for _, mapping := range csvData {
 		if strings.EqualFold(mapping.XMLPath, xmlPath) {
 			return mapping.GermanLabel
 		}
 	}
+
 	return ""
 }
+
 func lookupHeader(xmlPath string) string {
 	csvMutex.RLock()
 	defer csvMutex.RUnlock()
