@@ -1,14 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/csv"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-openapi/runtime/middleware"
@@ -16,13 +18,24 @@ import (
 	"github.com/jung-kurt/gofpdf"
 )
 
-var translations map[string]string
+// CSV Structure definition for mapping
+type csvMapping struct {
+	XMLPath     string
+	GermanPath  string
+	Field       string
+	GermanLabel string
+}
+
+var (
+	csvData   []csvMapping
+	csvLoaded bool
+	csvMutex  sync.RWMutex // Mutex for safe access to csvData and csvLoaded
+)
 
 func main() {
 	r := gin.Default()
 
-	loadTranslations("translations.csv")
-
+	// Define Swagger document
 	swaggerSpec := &spec.Swagger{
 		SwaggerProps: spec.SwaggerProps{
 			Swagger: "2.0",
@@ -101,6 +114,13 @@ func main() {
 												200: {
 													ResponseProps: spec.ResponseProps{
 														Description: "Successfully transformed the XML file to PDF",
+														Schema: &spec.Schema{
+															SchemaProps: spec.SchemaProps{
+																Type:        []string{"string"},
+																Format:      "binary",
+																Description: "The transformed PDF content",
+															},
+														},
 													},
 												},
 												400: {
@@ -159,10 +179,12 @@ func main() {
 		},
 	}
 
+	// Create handler for swagger.json
 	r.GET("/swagger.json", func(c *gin.Context) {
 		c.JSON(http.StatusOK, swaggerSpec)
 	})
 
+	// Create handler for swagger ui
 	opts := middleware.SwaggerUIOpts{
 		SpecURL: "/swagger.json",
 	}
@@ -224,88 +246,202 @@ func handleXMLtoPDF(c *gin.Context) {
 		return
 	}
 
-	var doc interface{}
-	err = xml.Unmarshal(xmlData, &doc)
+	pdfData, err := transformXMLToPDF(xmlData)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to parse XML"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("PDF transformation failed: %v", err)})
 		return
 	}
-
-	pdf := gofpdf.New("P", "mm", "A4", "")
-	pdf.AddPage()
-	pdf.SetFont("Arial", "B", 16)
-
-	processXMLLineByLine(xmlData, pdf)
-
-	pdfFile := filepath.Join(os.TempDir(), "output.pdf")
-	err = pdf.OutputFileAndClose(pdfFile)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to create PDF: %v", err)})
-		return
-	}
-
-	pdfData, err := os.ReadFile(pdfFile)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to read PDF: %v", err)})
-		return
-	}
-
-	os.Remove(pdfFile)
 
 	c.Data(http.StatusOK, "application/pdf", pdfData)
 }
 
-func processXMLLineByLine(xmlData []byte, pdf *gofpdf.Fpdf) {
-	decoder := xml.NewDecoder(strings.NewReader(string(xmlData)))
-	var currentElement string
-	var elementStack []string
+func transformXMLToPDF(xmlData []byte) ([]byte, error) {
+	pdf := gofpdf.New("P", "mm", "A4", "")
+	pdf.AddPage()
+	pdf.SetFont("Arial", "", 12)
+
+	// Load CSV if not already loaded
+	loadCSV()
+
+	xmlReader := bytes.NewReader(xmlData)
+	decoder := xml.NewDecoder(xmlReader)
+	var currentPath string
+	var groupStack []string
+	elementCounts := make(map[string]int)
 
 	for {
-		tok, err := decoder.Token()
-		if err != nil {
+		token, err := decoder.Token()
+		if err == io.EOF {
 			break
 		}
+		if err != nil {
+			return nil, fmt.Errorf("error decoding XML: %w", err)
+		}
 
-		switch token := tok.(type) {
+		switch t := token.(type) {
 		case xml.StartElement:
-			currentElement = token.Name.Local
-			elementStack = append(elementStack, currentElement)
-		case xml.EndElement:
-			elementStack = elementStack[:len(elementStack)-1]
+			name := t.Name.Local
+			if currentPath == "" {
+				currentPath = name
+			} else {
+				currentPath += "->" + name
+			}
+			groupStack = append(groupStack, name)
+
 		case xml.CharData:
-			content := strings.TrimSpace(string(token))
-			if content != "" {
-				path := strings.Join(elementStack, "->")
-				label := getLabel(path)
-				pdf.Cell(40, 10, fmt.Sprintf("%s: %s", label, content))
+			text := strings.TrimSpace(string(t))
+			if text != "" {
+				printElement(pdf, currentPath, text, groupStack, elementCounts)
+			}
+		case xml.EndElement:
+			if len(groupStack) > 0 {
+				groupStack = groupStack[:len(groupStack)-1]
+			}
+
+			parts := strings.Split(currentPath, "->")
+			if len(parts) > 0 {
+				currentPath = strings.Join(parts[:len(parts)-1], "->")
+			} else {
+				currentPath = ""
+			}
+
+		}
+
+	}
+
+	var buffer bytes.Buffer
+	err := pdf.Output(&buffer)
+
+	if err != nil {
+		return nil, fmt.Errorf("error creating pdf: %w", err)
+	}
+
+	return buffer.Bytes(), nil
+}
+
+func printElement(pdf *gofpdf.Fpdf, currentPath, text string, groupStack []string, elementCounts map[string]int) {
+
+	germanLabel := lookupLabel(currentPath)
+
+	parts := strings.Split(currentPath, "->")
+	elementName := parts[len(parts)-1]
+	elementName = strings.TrimSpace(elementName)
+
+	header := ""
+
+	if len(groupStack) > 1 {
+		header = lookupHeader(currentPath)
+
+		if header != "" {
+			// Print header if changed
+
+			if len(groupStack) > 0 {
+				lastHeader := groupStack[len(groupStack)-2]
+				lastHeader = strings.TrimSpace(lastHeader)
+				if header != lastHeader {
+					pdf.Ln(5)
+					pdf.SetFont("Arial", "B", 12)
+					pdf.Cell(0, 10, header)
+					pdf.Ln(5)
+					pdf.SetFont("Arial", "", 12)
+					//groupStack = groupStack[:len(groupStack)-1] // removing last group as its printed now
+				}
+
 			}
 		}
+
 	}
+
+	label := elementName
+
+	if germanLabel != "" {
+		label = germanLabel
+	}
+
+	elementCountKey := currentPath
+	elementCounts[elementCountKey]++
+	if elementCounts[elementCountKey] > 1 {
+		label = fmt.Sprintf("%s %d", label, elementCounts[elementCountKey])
+
+	}
+
+	pdf.Cell(0, 10, fmt.Sprintf("%s: %s", label, text))
+	pdf.Ln(5)
 }
 
-func getLabel(path string) string {
-	if label, ok := translations[path]; ok {
-		return label
+func loadCSV() {
+	csvMutex.RLock()
+	if csvLoaded {
+		csvMutex.RUnlock()
+		return
 	}
-	parts := strings.Split(path, "->")
-	return parts[len(parts)-1]
-}
+	csvMutex.RUnlock()
+	csvMutex.Lock()
+	defer csvMutex.Unlock()
 
-func loadTranslations(filePath string) {
-	translations = make(map[string]string)
-	file, err := os.Open(filePath)
+	if csvLoaded {
+		return // Double check in case another thread loaded it while waiting for the lock
+	}
+
+	file, err := os.Open("translations.csv")
 	if err != nil {
-		log.Fatalf("Failed to open translations file: %v", err)
+		log.Printf("Error opening CSV file: %v", err)
+		return
 	}
 	defer file.Close()
 
 	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
+	reader.Comma = ','
+
+	_, err = reader.Read() // Skip header row
 	if err != nil {
-		log.Fatalf("Failed to read translations file: %v", err)
+		log.Printf("Error reading header row: %v", err)
+		return
 	}
 
-	for _, record := range records[1:] {
-		translations[record[0]] = record[3]
+	for {
+		row, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("Error reading CSV row: %v", err)
+			continue
+		}
+		if len(row) == 4 {
+			csvData = append(csvData, csvMapping{
+				XMLPath:     row[0],
+				GermanPath:  row[1],
+				Field:       row[2],
+				GermanLabel: row[3],
+			})
+		} else {
+			log.Printf("Skipping invalid CSV row: %v", row)
+		}
 	}
+	csvLoaded = true
+}
+
+func lookupLabel(xmlPath string) string {
+	csvMutex.RLock()
+	defer csvMutex.RUnlock()
+	for _, mapping := range csvData {
+		if strings.EqualFold(mapping.XMLPath, xmlPath) {
+			return mapping.GermanLabel
+		}
+	}
+	return ""
+}
+func lookupHeader(xmlPath string) string {
+	csvMutex.RLock()
+	defer csvMutex.RUnlock()
+	for _, mapping := range csvData {
+		if strings.EqualFold(mapping.XMLPath, xmlPath) {
+			parts := strings.Split(mapping.GermanPath, "->")
+			if len(parts) > 1 {
+				return parts[len(parts)-2]
+			}
+		}
+	}
+	return ""
 }
