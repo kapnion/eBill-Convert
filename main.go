@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 
+	"eBill-Convert/utils" // Import the utils package
+
 	"github.com/gin-gonic/gin"
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/spec"
@@ -22,6 +24,7 @@ import (
 type csvMapping struct {
 	XMLPath     string
 	GermanPath  string
+	Field       string
 	GermanLabel string
 }
 
@@ -195,7 +198,7 @@ func main() {
 	r.POST("/xmltohtml", handleXMLtoHTML)
 	r.POST("/xmltopdf", handleXMLtoPDF)
 
-	if err := r.Run(":8080"); err != nil {
+	if err := r.Run(":8082"); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
@@ -214,14 +217,13 @@ func handleXMLtoHTML(c *gin.Context) {
 	}
 	defer src.Close()
 
-	htmlData := make([]byte, file.Size)
-	_, err = src.Read(htmlData)
+	htmlData, err := utils.TransformXML(src)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "file read error"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("XML transformation failed: %v", err)})
 		return
 	}
 
-	c.Data(http.StatusOK, "text/html; charset=utf-8", htmlData)
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(htmlData))
 }
 
 func handleXMLtoPDF(c *gin.Context) {
@@ -319,16 +321,12 @@ func transformXMLToPDF(xmlData []byte) ([]byte, error) {
 }
 
 func printElement(pdf *gofpdf.Fpdf, currentPath, text string, groupStack []string, elementCounts map[string]int) {
-	// Extract the last part of the path for label lookup
-	parts := strings.Split(currentPath, "->")
-	if len(parts) == 0 {
-		return
-	}
-	elementName := parts[len(parts)-1]
+
 	germanLabel := lookupLabel(currentPath)
-	if germanLabel == "" {
-		germanLabel = lookupLabel(elementName)
-	}
+
+	parts := strings.Split(currentPath, "->")
+	elementName := parts[len(parts)-1]
+	elementName = strings.TrimSpace(elementName)
 
 	header := ""
 
@@ -337,6 +335,7 @@ func printElement(pdf *gofpdf.Fpdf, currentPath, text string, groupStack []strin
 
 		if header != "" {
 			// Print header if changed
+
 			if len(groupStack) > 0 {
 				lastHeader := groupStack[len(groupStack)-2]
 				lastHeader = strings.TrimSpace(lastHeader)
@@ -346,14 +345,16 @@ func printElement(pdf *gofpdf.Fpdf, currentPath, text string, groupStack []strin
 					pdf.Cell(0, 10, header)
 					pdf.Ln(5)
 					pdf.SetFont("Arial", "", 12)
-
+					//groupStack = groupStack[:len(groupStack)-1] // removing last group as its printed now
 				}
 
 			}
 		}
+
 	}
 
 	label := elementName
+
 	if germanLabel != "" {
 		label = germanLabel
 	}
@@ -391,7 +392,7 @@ func loadCSV() {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
-	reader.Comma = ';'
+	reader.Comma = ','
 
 	_, err = reader.Read() // Skip header row
 	if err != nil {
@@ -408,11 +409,12 @@ func loadCSV() {
 			log.Printf("Error reading CSV row: %v", err)
 			continue
 		}
-		if len(row) == 3 {
+		if len(row) == 4 {
 			csvData = append(csvData, csvMapping{
 				XMLPath:     row[0],
 				GermanPath:  row[1],
-				GermanLabel: row[2],
+				Field:       row[2],
+				GermanLabel: row[3],
 			})
 		} else {
 			log.Printf("Skipping invalid CSV row: %v", row)
@@ -424,23 +426,13 @@ func loadCSV() {
 func lookupLabel(xmlPath string) string {
 	csvMutex.RLock()
 	defer csvMutex.RUnlock()
-
 	for _, mapping := range csvData {
 		if strings.EqualFold(mapping.XMLPath, xmlPath) {
 			return mapping.GermanLabel
 		}
-		parts := strings.Split(mapping.XMLPath, "->")
-		if len(parts) > 0 {
-			lastPart := parts[len(parts)-1]
-			if strings.EqualFold(lastPart, xmlPath) {
-				return mapping.GermanLabel
-			}
-		}
 	}
-
 	return ""
 }
-
 func lookupHeader(xmlPath string) string {
 	csvMutex.RLock()
 	defer csvMutex.RUnlock()
