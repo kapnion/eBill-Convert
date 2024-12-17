@@ -12,8 +12,6 @@ import (
 	"strings"
 	"sync"
 
-	"eBill-Convert/utils" // Import the utils package
-
 	"github.com/gin-gonic/gin"
 	"github.com/go-openapi/runtime/middleware"
 	"github.com/go-openapi/spec"
@@ -55,18 +53,20 @@ func main() {
 							Post: &spec.Operation{
 								OperationProps: spec.OperationProps{
 									Description: "Transforms XML to HTML.",
-									Consumes:    []string{"application/xml"},
+									Consumes:    []string{"multipart/form-data"},
 									Produces:    []string{"text/html"},
 									Parameters: []spec.Parameter{
 										{
 											ParamProps: spec.ParamProps{
 												Name:        "xmlFile",
 												In:          "formData",
-												Description: "The XML file.",
+												Description: "The XML file to be transformed.",
 												Required:    true,
-											},
-											SimpleSchema: spec.SimpleSchema{
-												Type: "file",
+												Schema: &spec.Schema{
+													SchemaProps: spec.SchemaProps{
+														Type: []string{"file"},
+													},
+												},
 											},
 										},
 									},
@@ -76,11 +76,29 @@ func main() {
 												200: {
 													ResponseProps: spec.ResponseProps{
 														Description: "HTML content generated from XML.",
+														Schema: &spec.Schema{
+															SchemaProps: spec.SchemaProps{
+																Type:   []string{"string"},
+																Format: "binary",
+															},
+														},
 													},
 												},
 												400: {
 													ResponseProps: spec.ResponseProps{
 														Description: "Invalid XML or other errors.",
+														Schema: &spec.Schema{
+															SchemaProps: spec.SchemaProps{
+																Type: []string{"object"},
+																Properties: map[string]spec.Schema{
+																	"error": {
+																		SchemaProps: spec.SchemaProps{
+																			Type: []string{"string"},
+																		},
+																	},
+																},
+															},
+														},
 													},
 												},
 											},
@@ -102,11 +120,13 @@ func main() {
 											ParamProps: spec.ParamProps{
 												Name:        "xmlFile",
 												In:          "formData",
-												Description: "The XML file.",
+												Description: "The XML file to be transformed.",
 												Required:    true,
-											},
-											SimpleSchema: spec.SimpleSchema{
-												Type: "file",
+												Schema: &spec.Schema{
+													SchemaProps: spec.SchemaProps{
+														Type: []string{"file"},
+													},
+												},
 											},
 										},
 									},
@@ -130,16 +150,11 @@ func main() {
 														Description: "Invalid XML or other errors.",
 														Schema: &spec.Schema{
 															SchemaProps: spec.SchemaProps{
-																Type: spec.StringOrArray{"object"},
+																Type: []string{"object"},
 																Properties: map[string]spec.Schema{
 																	"error": {
 																		SchemaProps: spec.SchemaProps{
-																			Type: spec.StringOrArray{"string"},
-																		},
-																	},
-																	"message": {
-																		SchemaProps: spec.SchemaProps{
-																			Type: spec.StringOrArray{"string"},
+																			Type: []string{"string"},
 																		},
 																	},
 																},
@@ -152,16 +167,11 @@ func main() {
 														Description: "Internal server error",
 														Schema: &spec.Schema{
 															SchemaProps: spec.SchemaProps{
-																Type: spec.StringOrArray{"object"},
+																Type: []string{"object"},
 																Properties: map[string]spec.Schema{
 																	"error": {
 																		SchemaProps: spec.SchemaProps{
-																			Type: spec.StringOrArray{"string"},
-																		},
-																	},
-																	"message": {
-																		SchemaProps: spec.SchemaProps{
-																			Type: spec.StringOrArray{"string"},
+																			Type: []string{"string"},
 																		},
 																	},
 																},
@@ -198,7 +208,7 @@ func main() {
 	r.POST("/xmltohtml", handleXMLtoHTML)
 	r.POST("/xmltopdf", handleXMLtoPDF)
 
-	if err := r.Run(":8082"); err != nil {
+	if err := r.Run(":8080"); err != nil {
 		log.Fatalf("Failed to start server: %v", err)
 	}
 }
@@ -217,13 +227,14 @@ func handleXMLtoHTML(c *gin.Context) {
 	}
 	defer src.Close()
 
-	htmlData, err := utils.TransformXML(src)
+	htmlData := make([]byte, file.Size)
+	_, err = src.Read(htmlData)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("XML transformation failed: %v", err)})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file read error"})
 		return
 	}
 
-	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(htmlData))
+	c.Data(http.StatusOK, "text/html; charset=utf-8", htmlData)
 }
 
 func handleXMLtoPDF(c *gin.Context) {
@@ -283,9 +294,9 @@ func transformXMLToPDF(xmlData []byte) ([]byte, error) {
 		case xml.StartElement:
 			name := t.Name.Local
 			if currentPath == "" {
-				currentPath = name
+				currentPath = "/" + name
 			} else {
-				currentPath += "->" + name
+				currentPath += "/" + name
 			}
 			groupStack = append(groupStack, name)
 
@@ -299,9 +310,9 @@ func transformXMLToPDF(xmlData []byte) ([]byte, error) {
 				groupStack = groupStack[:len(groupStack)-1]
 			}
 
-			parts := strings.Split(currentPath, "->")
+			parts := strings.Split(currentPath, "/")
 			if len(parts) > 0 {
-				currentPath = strings.Join(parts[:len(parts)-1], "->")
+				currentPath = strings.Join(parts[:len(parts)-1], "/")
 			} else {
 				currentPath = ""
 			}
@@ -324,7 +335,7 @@ func printElement(pdf *gofpdf.Fpdf, currentPath, text string, groupStack []strin
 
 	germanLabel := lookupLabel(currentPath)
 
-	parts := strings.Split(currentPath, "->")
+	parts := strings.Split(currentPath, "/")
 	elementName := parts[len(parts)-1]
 	elementName = strings.TrimSpace(elementName)
 
@@ -392,7 +403,7 @@ func loadCSV() {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
-	reader.Comma = ','
+	reader.Comma = ';'
 
 	_, err = reader.Read() // Skip header row
 	if err != nil {
@@ -409,12 +420,12 @@ func loadCSV() {
 			log.Printf("Error reading CSV row: %v", err)
 			continue
 		}
-		if len(row) == 4 {
+		if len(row) == 3 {
 			csvData = append(csvData, csvMapping{
-				XMLPath:     row[0],
+				XMLPath:     row[1],
 				GermanPath:  row[1],
-				Field:       row[2],
-				GermanLabel: row[3],
+				Field:       row[0],
+				GermanLabel: row[2],
 			})
 		} else {
 			log.Printf("Skipping invalid CSV row: %v", row)
@@ -427,22 +438,39 @@ func lookupLabel(xmlPath string) string {
 	csvMutex.RLock()
 	defer csvMutex.RUnlock()
 	for _, mapping := range csvData {
-		if strings.EqualFold(mapping.XMLPath, xmlPath) {
+		if comparePaths(mapping.GermanPath, xmlPath) {
 			return mapping.GermanLabel
 		}
 	}
 	return ""
 }
+
 func lookupHeader(xmlPath string) string {
 	csvMutex.RLock()
 	defer csvMutex.RUnlock()
 	for _, mapping := range csvData {
-		if strings.EqualFold(mapping.XMLPath, xmlPath) {
-			parts := strings.Split(mapping.GermanPath, "->")
+		if comparePaths(mapping.GermanPath, xmlPath) {
+			parts := strings.Split(mapping.GermanPath, "/")
 			if len(parts) > 1 {
 				return parts[len(parts)-2]
 			}
 		}
 	}
 	return ""
+}
+
+func comparePaths(path1, path2 string) bool {
+	parts1 := strings.Split(path1, "/")
+	parts2 := strings.Split(path2, "/")
+	if len(parts1) != len(parts2) {
+		return false
+	}
+	for i := range parts1 {
+		part1 := strings.Split(parts1[i], ":")
+		part2 := strings.Split(parts2[i], ":")
+		if part1[len(part1)-1] != part2[len(part2)-1] {
+			return false
+		}
+	}
+	return true
 }
